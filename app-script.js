@@ -14,8 +14,8 @@
 
 // ================= CONFIGURATION =================
 
-const GEMINI_API_KEY = "AIzaSyB5a9M7T87ucj4090gAOsMY2MT_gCvcu1o";
-const SPREADSHEET_ID = "1-Ei86RfHKrXnBZIwsiYFEExUqyIbCN0ub-CJhU1yB3U";
+const GEMINI_API_KEY = "";
+const SPREADSHEET_ID = "";
 const DATA_SHEET_NAME = "Sheet1";
 
 // Model Configuration
