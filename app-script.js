@@ -19,8 +19,14 @@ const SPREADSHEET_ID = "";
 const DATA_SHEET_NAME = "Sheet1";
 
 // Model Configuration
-const ENRICH_MODEL = "gemini-2.5-flash-lite";  // Cheap model for bulk enrichment
+const ENRICH_MODEL = "gemini-2.5-flash";  // Cheap model for bulk enrichment
 const REPORT_MODEL = "gemini-2.5-pro";         // Premium model for weekly reports
+
+// GitHub Configuration
+const GITHUB_OWNER = "minzhang28";
+const GITHUB_REPO = "coffee-weekly";
+const GITHUB_TOKEN = ""; // IMPORTANT: Set this in Script Properties (File > Project Properties > Script Properties)
+                         // Key: GITHUB_TOKEN, Value: your GitHub personal access token
 
 // =================================================
 
@@ -30,6 +36,8 @@ function onOpen() {
       .addItem('🔄 1. Sync Data', 'syncCoffeeData')
       .addItem('🧠 2. AI Enrich', 'enrichNewBeans')
       .addItem('📝 3. Generate Post', 'generateWeeklyPost')
+      .addSeparator()
+      .addItem('🔁 Reset Status to Pending', 'resetStatusToPending')
       .addSeparator()
       .addItem('🛠 Setup Headers', 'setupHeaders')
       .addItem('🔍 Debug Prototype', 'debugPrototype')
@@ -111,6 +119,65 @@ function syncCoffeeData() {
   });
 
   console.log(`Sync Complete! New Beans: ${newCount}, Updated Stock: ${updateCount}`);
+}
+
+/**
+ * UTILITY: RESET STATUS TO PENDING
+ * Resets column AH (Status) to "PENDING" for all rows (or specific statuses).
+ * Options:
+ * - resetAll: true = Reset all rows (default)
+ * - resetAll: false = Only reset COMPLETED, SKIPPED, ERROR rows (preserve PENDING)
+ */
+function resetStatusToPending(resetAll = true) {
+  console.log("🔄 Resetting Status column to PENDING...");
+
+  const sheet = getTargetSheet();
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow < 2) {
+    console.log("No data rows to reset.");
+    return;
+  }
+
+  // Read current status values
+  const statusRange = sheet.getRange(2, 34, lastRow - 1, 1);
+  const statuses = statusRange.getValues();
+
+  let resetCount = 0;
+
+  // Update status values
+  const newStatuses = statuses.map(row => {
+    const currentStatus = row[0];
+
+    if (resetAll) {
+      // Reset all rows
+      resetCount++;
+      return ["PENDING"];
+    } else {
+      // Only reset non-PENDING rows
+      if (currentStatus === "COMPLETED" || currentStatus === "SKIPPED" || currentStatus === "ERROR") {
+        resetCount++;
+        return ["PENDING"];
+      }
+      return [currentStatus];
+    }
+  });
+
+  // Write back to sheet
+  statusRange.setValues(newStatuses);
+
+  console.log(`✅ Reset complete! ${resetCount} rows set to PENDING.`);
+
+  // Show user confirmation
+  try {
+    SpreadsheetApp.getUi().alert(
+      'Status Reset Complete',
+      `${resetCount} rows have been reset to PENDING.\n\nYou can now run "AI Enrich" to re-process these beans.`,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  } catch (e) {
+    console.log("UI alert skipped (Automation mode).");
+  }
 }
 
 /**
@@ -438,6 +505,7 @@ function generateWeeklyPost() {
     price: headers.indexOf("Price"),
     weight: headers.indexOf("Weight"),
     stock: headers.indexOf("Stock"),
+    url: headers.indexOf("URL"),
     roastDate: headers.indexOf("Roast Date"),
     country: headers.indexOf("Country"),
     region: headers.indexOf("Region"),
@@ -491,6 +559,7 @@ function generateWeeklyPost() {
           name: row[idx.name],
           price: row[idx.price],
           weight: row[idx.weight],
+          url: row[idx.url],
           roast_date: formatDate(row[idx.roastDate]),
           origin: `${row[idx.country]} ${row[idx.region]}`,
           variety: row[idx.variety],
@@ -653,65 +722,80 @@ function generateWeeklyPost() {
 
     ## 手冲豆推荐
 
-    ### 推荐 1: [豆子名称]
+    ### 推荐 1: [豆子名称](url)
 
     #### 基本信息
-    烘焙商：[店名] | 名称：[豆子名称]
-    📍 [产地] | 🌱 [品种] | ⚙️ [处理法]
-    🔥 [烘焙度] | 📅 [日期] | 💰 [价格]
+    - 烘焙商：[店名]
+    - 产地：[产地]
+    - 品种：[品种]
+    - 处理法：[处理法]
+    - 烘焙度：[烘焙度]
+    - 烘焙日期：[日期]
+    - 价格：[价格]
 
     #### 入手理由
-    🌟 ① [时令/状态]
+    ① [时令/状态]
     - [专业语气，例如 "正是这个豆子的产季"]
-    🌟 ② [稀缺/性价比]
+
+    ② [稀缺/性价比]
     - [专业语气]
 
     #### 风味档案
-    🌱 [品种]
-    【特性】[一句话]
-    【喝起来像】[具体食物，不要抽象词]
+    **品种特性**：[一句话]
+
+    **风味描述**：[具体食物，不要抽象词]
 
     #### 冲煮参考（手冲/V60）
-    粉水比：[比例]
-    水温：[温度] (⚠️ [原因，例如"浅烘怕萃不透"])
-    研磨：[粗细]
+    - 粉水比：[比例]
+    - 水温：[温度]（[原因，例如"浅烘怕萃不透"]）
+    - 研磨：[粗细]
 
-    ### 推荐 2: [豆子名称]
+    ### 推荐 2: [豆子名称](url)
     [重复以上结构]
 
     ---
 
     ## 意式豆推荐
 
-    ### 推荐 1: [豆子名称]
+    ### 推荐 1: [豆子名称](url)
 
     #### 基本信息
-    烘焙商：[店名] | 名称：[豆子名称]
-    📍 [产地] | 🌱 [品种] | ⚙️ [处理法]
-    🔥 [烘焙度] | 📅 [日期] | 💰 [价格]
+    - 烘焙商：[店名]
+    - 产地：[产地]
+    - 品种：[品种]
+    - 处理法：[处理法]
+    - 烘焙度：[烘焙度]
+    - 烘焙日期：[日期]
+    - 价格：[价格]
 
     #### 入手理由
-    🌟 ① [时令/状态]
-    🌟 ② [稀缺/性价比]
+    ① [时令/状态]
+
+    ② [稀缺/性价比]
 
     #### 风味档案
-    🌱 [品种]
-    【特性】[一句话]
-    【喝起来像】[具体食物]
+    **品种特性**：[一句话]
+
+    **风味描述**：[具体食物]
 
     #### 冲煮参考（意式机）
-    粉量：[克数]
-    萃取比例：[比如1:2]
-    水温：[温度] (⚠️ [原因])
-    研磨：[细度]
+    - 粉量：[克数]
+    - 萃取比例：[比如1:2]
+    - 水温：[温度]（[原因]）
+    - 研磨：[细度]
 
-    ### 推荐 2: [豆子名称]
+    ### 推荐 2: [豆子名称](url)
     [重复以上结构]
 
     ---
 
-    # 怎么选
-    [表格总结：手冲vs意式的选择建议]
+    ## 怎么选
+
+    [写一段3-4句话的选择建议，用故事化的方式说明：
+    - 什么场景下选哪款豆子
+    - 不同口味偏好的人适合哪款
+    - 用自然对话的语气，避免列表或条目式表达
+    例如："如果你平时喜欢酸度明亮的手冲，XX豆子会让你惊喜。想要稳定经典的口感，可以试试XX。意式机的话，XX适合做单品SOE，XX则是做奶咖的好底子。"]
 
     ENGLISH TEMPLATE (Instagram格式):
     # This Week's Coffee Picks
@@ -722,65 +806,80 @@ function generateWeeklyPost() {
 
     ## Pour Over Recommendations
 
-    ### Pick 1: [Bean Name]
+    ### Pick 1: [Bean Name](url)
 
     #### Coffee Profile
-    Roaster: [Shop] | Name: [Bean Name]
-    📍 [Origin] | 🌱 [Variety] | ⚙️ [Process]
-    🔥 [Roast] | 📅 [Date] | 💰 [Price]
+    - Roaster: [Shop]
+    - Origin: [Origin]
+    - Variety: [Variety]
+    - Process: [Process]
+    - Roast: [Roast]
+    - Roast Date: [Date]
+    - Price: [Price]
 
     #### Why Get This
-    🌟 ① [Seasonality/Status]
+    ① [Seasonality/Status]
     - [Professional tone]
-    🌟 ② [Rarity/Value]
+
+    ② [Rarity/Value]
     - [Professional tone]
 
     #### Flavor Profile
-    🌱 [Variety]
-    **Character**: [One line]
+    **Variety Character**: [One line]
+
     **Tastes Like**: [Specific food comparisons]
 
     #### Brew Guide (V60/Pour Over)
-    Ratio: [ratio, e.g., 1:16]
-    Temp: [temp] (⚠️ [reason, e.g., "light roast needs high temp"])
-    Grind: [coarseness]
+    - Ratio: [ratio, e.g., 1:16]
+    - Temp: [temp] ([reason, e.g., "light roast needs high temp"])
+    - Grind: [coarseness]
 
-    ### Pick 2: [Bean Name]
+    ### Pick 2: [Bean Name](url)
     [Repeat structure]
 
     ---
 
     ## Espresso Recommendations
 
-    ### Pick 1: [Bean Name]
+    ### Pick 1: [Bean Name](url)
 
     #### Coffee Profile
-    Roaster: [Shop] | Name: [Bean Name]
-    📍 [Origin] | 🌱 [Variety] | ⚙️ [Process]
-    🔥 [Roast] | 📅 [Date] | 💰 [Price]
+    - Roaster: [Shop]
+    - Origin: [Origin]
+    - Variety: [Variety]
+    - Process: [Process]
+    - Roast: [Roast]
+    - Roast Date: [Date]
+    - Price: [Price]
 
     #### Why Get This
-    🌟 ① [Seasonality/Status]
-    🌟 ② [Rarity/Value]
+    ① [Seasonality/Status]
+
+    ② [Rarity/Value]
 
     #### Flavor Profile
-    🌱 [Variety]
-    **Character**: [One line]
+    **Variety Character**: [One line]
+
     **Tastes Like**: [Specific food comparisons]
 
     #### Brew Guide (Espresso Machine)
-    Dose: [grams]
-    Ratio: [e.g., 1:2]
-    Temp: [temp] (⚠️ [reason])
-    Grind: [fineness]
+    - Dose: [grams]
+    - Ratio: [e.g., 1:2]
+    - Temp: [temp] ([reason])
+    - Grind: [fineness]
 
-    ### Pick 2: [Bean Name]
+    ### Pick 2: [Bean Name](url)
     [Repeat structure]
 
     ---
 
-    # Quick Guide
-    [Summary table comparing pour over vs espresso picks]
+    ## How to Choose
+
+    [Write a 3-4 sentence narrative guide that explains:
+    - Which bean to choose for different scenarios
+    - What flavor preferences match which coffee
+    - Use natural, conversational and professional tone (no bullet points or lists)
+    Example: "If you're into bright, fruity pour overs, grab the XX—it's hitting peak season right now. For a more balanced daily drinker, XX is your safe bet. On the espresso side, XX pulls a clean, fruity shot that's wild as a single origin. XX is your workhorse for milk drinks—sweet, chocolatey, and bulletproof."]
 
     IMPORTANT:
     - Return ONLY valid JSON (no markdown code blocks, no extra text)
@@ -797,6 +896,7 @@ function generateWeeklyPost() {
     - "filter" array contains 2 pour over beans
     - "espresso" array contains 2 espresso beans
     - Use the appropriate beans for each section
+    - Each bean has a "url" field - use it to make the bean name clickable in the heading: [Bean Name](url)
 
     ### 🏪 Shop Addresses:
     - Revolver: 325 Cambie St
@@ -830,7 +930,15 @@ function generateWeeklyPost() {
 
     // Validate structure
     if (!bilingualContent.chinese || !bilingualContent.english) {
+      console.error("❌ Response structure invalid:", JSON.stringify(Object.keys(bilingualContent)));
       throw new Error("Response missing chinese or english field");
+    }
+
+    if (!bilingualContent.chinese.content || !bilingualContent.english.content) {
+      console.error("❌ Content missing in response");
+      console.error("Chinese keys:", Object.keys(bilingualContent.chinese || {}));
+      console.error("English keys:", Object.keys(bilingualContent.english || {}));
+      throw new Error("Response missing content field");
     }
 
     // Calculate output tokens
@@ -838,12 +946,30 @@ function generateWeeklyPost() {
     const englishLength = (bilingualContent.english.content || "").length;
     const estimatedOutputTokens = Math.ceil((chineseLength + englishLength) / 4);
 
-    // Save both versions
-    saveDraft(bilingualContent.chinese.content, "Chinese", bilingualContent.chinese.title);
-    saveDraft(bilingualContent.english.content, "English", bilingualContent.english.title);
+    // Save both versions to Google Sheets
+    saveDraft(bilingualContent.chinese.content, "Chinese", bilingualContent.chinese.title || "本周推荐");
+    saveDraft(bilingualContent.english.content, "English", bilingualContent.english.title || "This Week's Picks");
 
-    console.log("✅ Chinese version saved");
-    console.log("✅ English version saved");
+    console.log("✅ Chinese version saved to sheet");
+    console.log("✅ English version saved to sheet");
+
+    // Push to GitHub
+    const dateStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    console.log("\n📤 Pushing to GitHub...");
+    console.log(`Date: ${dateStr}`);
+    console.log(`Chinese content length: ${chineseLength} chars`);
+    console.log(`English content length: ${englishLength} chars`);
+
+    const chinesePushed = pushToGitHub(bilingualContent.chinese.content, "Chinese", dateStr);
+    const englishPushed = pushToGitHub(bilingualContent.english.content, "English", dateStr);
+
+    if (chinesePushed && englishPushed) {
+      console.log("✅ Both versions pushed to GitHub successfully");
+    } else if (chinesePushed || englishPushed) {
+      console.log("⚠️ Partial success: Some files failed to push to GitHub");
+    } else {
+      console.log("❌ GitHub push failed for both versions");
+    }
 
     // ✨ Core writeback: Update Last Promoted Date
     console.log("📝 Updating 'Last Promoted Date' for selected beans...");
@@ -899,6 +1025,111 @@ function saveDraft(content, language, title) {
   const today = new Date();
   sheet.appendRow([today, language || "N/A", title || "N/A", content]);
   console.log(`✅ ${language} post saved to 'Weekly_Drafts' sheet.`);
+}
+
+/**
+ * Pushes markdown content to GitHub repository
+ * @param {string} content - Markdown content to push
+ * @param {string} language - Language identifier (Chinese/English)
+ * @param {string} date - Date string for filename (YYYY-MM-DD format)
+ * @returns {boolean} Success status
+ */
+function pushToGitHub(content, language, date) {
+  console.log(`🔍 pushToGitHub called with: language="${language}", date="${date}", contentLength=${content ? content.length : 'undefined'}`);
+
+  try {
+    // Validate inputs
+    if (!content || !language || !date) {
+      console.error(`❌ Invalid parameters: content=${!!content}, language=${language}, date=${date}`);
+      return false;
+    }
+
+    // Get GitHub token from Script Properties
+    let token = GITHUB_TOKEN;
+    if (!token) {
+      const props = PropertiesService.getScriptProperties();
+      token = props.getProperty('GITHUB_TOKEN');
+    }
+
+    if (!token) {
+      console.error("❌ GitHub token not configured. Set GITHUB_TOKEN in Script Properties.");
+      return false;
+    }
+
+    // Create filename: posts/YYYY-MM-DD/chinese.md or posts/YYYY-MM-DD/english.md
+    const languageSuffix = language.toLowerCase();
+    const filename = `posts/${date}/${languageSuffix}.md`;
+
+    // Check if file already exists
+    const checkUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${filename}`;
+    const checkOptions = {
+      method: "get",
+      headers: {
+        "Authorization": `token ${token}`,
+        "Accept": "application/vnd.github.v3+json"
+      },
+      muteHttpExceptions: true
+    };
+
+    const checkResponse = UrlFetchApp.fetch(checkUrl, checkOptions);
+    const checkStatus = checkResponse.getResponseCode();
+    let sha = null;
+
+    if (checkStatus === 200) {
+      // File exists, get SHA for update
+      const existingFile = JSON.parse(checkResponse.getContentText());
+      sha = existingFile.sha;
+      console.log(`📝 File exists, will update: ${filename}`);
+    } else if (checkStatus === 404) {
+      console.log(`📝 Creating new file: ${filename}`);
+    } else {
+      console.error(`❌ GitHub API error: ${checkStatus}`);
+      return false;
+    }
+
+    // Encode content to base64 with UTF-8 charset (GitHub API requirement)
+    const base64Content = Utilities.base64Encode(content, Utilities.Charset.UTF_8);
+
+    // Create/update file via GitHub API
+    const createUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/contents/${filename}`;
+    const payload = {
+      message: `Add ${language} coffee report for ${date}`,
+      content: base64Content,
+      branch: "main"
+    };
+
+    if (sha) {
+      payload.sha = sha; // Include SHA for updates
+    }
+
+    const createOptions = {
+      method: "put",
+      headers: {
+        "Authorization": `token ${token}`,
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json"
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    const createResponse = UrlFetchApp.fetch(createUrl, createOptions);
+    const createStatus = createResponse.getResponseCode();
+
+    if (createStatus === 200 || createStatus === 201) {
+      const result = JSON.parse(createResponse.getContentText());
+      console.log(`✅ ${language} report pushed to GitHub: ${result.content.html_url}`);
+      return true;
+    } else {
+      console.error(`❌ GitHub push failed: ${createStatus}`);
+      console.error(createResponse.getContentText());
+      return false;
+    }
+
+  } catch (e) {
+    console.error(`❌ GitHub push error: ${e.message}`);
+    return false;
+  }
 }
 
 function callGeminiAPI(text, forceJson, modelName) {
