@@ -14,19 +14,94 @@
 
 // ================= CONFIGURATION =================
 
+/**
+ * IMPORTANT: For security, set these in Script Properties instead of hardcoding:
+ *
+ * In Google Apps Script Editor:
+ * 1. Go to Project Settings (gear icon on left sidebar)
+ * 2. Scroll to "Script Properties"
+ * 3. Click "Add script property"
+ * 4. Add these properties:
+ *    - GEMINI_API_KEY: Your Gemini API key
+ *    - SPREADSHEET_ID: Your Google Sheets ID
+ *    - GITHUB_TOKEN: Your GitHub personal access token
+ *
+ * OR use the legacy method:
+ * File > Project properties > Script properties tab > Add rows
+ */
+
+// Get configuration from Script Properties (preferred) or fallback to constants
+function getConfig() {
+  const props = PropertiesService.getScriptProperties();
+
+  return {
+    GEMINI_API_KEY: props.getProperty('GEMINI_API_KEY') || "",
+    SPREADSHEET_ID: props.getProperty('SPREADSHEET_ID') || "",
+    GITHUB_TOKEN: props.getProperty('GITHUB_TOKEN') || ""
+  };
+}
+
+// Default constants (used as fallback if Script Properties not set)
 const GEMINI_API_KEY = "";
 const SPREADSHEET_ID = "";
 const DATA_SHEET_NAME = "Sheet1";
 
 // Model Configuration
 const ENRICH_MODEL = "gemini-2.5-flash";  // Cheap model for bulk enrichment
-const REPORT_MODEL = "gemini-2.5-pro";         // Premium model for weekly reports
+const REPORT_MODEL = "gemini-2.5-pro";    // Premium model for weekly reports
 
 // GitHub Configuration
 const GITHUB_OWNER = "minzhang28";
 const GITHUB_REPO = "coffee-weekly";
-const GITHUB_TOKEN = ""; // IMPORTANT: Set this in Script Properties (File > Project Properties > Script Properties)
-                         // Key: GITHUB_TOKEN, Value: your GitHub personal access token
+const GITHUB_TOKEN = "";
+
+// ============ TUNING PARAMETERS ============
+
+/**
+ * SCORING WEIGHTS (must add up to 1.0)
+ * Adjust these to change recommendation priorities
+ */
+const SCORING_WEIGHTS = {
+  quality: 0.40,      // Rare varieties, special processes, famous farms (40%)
+  seasonality: 0.25,  // Freshness and crop timing (25%)
+  value: 0.25,        // Price fairness (25%)
+  versatility: 0.10   // Roast match for brew method (10%)
+};
+
+/**
+ * CANDIDATE SELECTION
+ * How many top candidates to send to AI for final selection
+ */
+const TOP_CANDIDATES_COUNT = 6;  // AI picks 2 from these 6 per category
+
+/**
+ * PROMOTION RULES
+ */
+const COOLDOWN_DAYS = 30;   // Days before same bean can be promoted again
+const FRESHNESS_DAYS = 14;  // Only consider beans synced in last N days
+
+/**
+ * ENRICHMENT SETTINGS
+ */
+const ENRICH_SLEEP_SECONDS = 2;        // Cooldown between API calls
+const ENRICH_ERROR_SLEEP_SECONDS = 120; // Cooldown after rate limit error
+
+/**
+ * PRESET SCORING PROFILES
+ * Uncomment one to quickly switch between strategies:
+ */
+
+// BALANCED (Default) - Mix of specialty and value
+// Current settings above
+
+// ADVENTUROUS - Favor rare varieties and seasonality
+// SCORING_WEIGHTS = { quality: 0.50, seasonality: 0.30, value: 0.10, versatility: 0.10 };
+
+// VALUE-FOCUSED - Prioritize price fairness
+// SCORING_WEIGHTS = { quality: 0.30, seasonality: 0.20, value: 0.40, versatility: 0.10 };
+
+// SEASONAL - Emphasize fresh arrivals
+// SCORING_WEIGHTS = { quality: 0.35, seasonality: 0.40, value: 0.15, versatility: 0.10 };
 
 // =================================================
 
@@ -40,6 +115,9 @@ function onOpen() {
       .addItem('🔁 Reset Status to Pending', 'resetStatusToPending')
       .addSeparator()
       .addItem('🛠 Setup Headers', 'setupHeaders')
+      .addItem('🔧 Setup Script Properties', 'setupScriptProperties')
+      .addItem('🔍 Check Configuration', 'checkConfiguration')
+      .addSeparator()
       .addItem('🔍 Debug Prototype', 'debugPrototype')
       .addItem('🔍 Debug Rogue Wave', 'debugRogueWave')
       .addToUi();
@@ -48,8 +126,109 @@ function onOpen() {
   }
 }
 
+/**
+ * Interactive setup for Script Properties
+ * Run this once to configure your API keys and IDs securely
+ */
+function setupScriptProperties() {
+  const ui = SpreadsheetApp.getUi();
+
+  // Get current values
+  const props = PropertiesService.getScriptProperties();
+  const currentGemini = props.getProperty('GEMINI_API_KEY') || "";
+  const currentSpreadsheet = props.getProperty('SPREADSHEET_ID') || "";
+  const currentGithub = props.getProperty('GITHUB_TOKEN') || "";
+
+  // Gemini API Key
+  const geminiResponse = ui.prompt(
+    'Setup: Gemini API Key',
+    `Enter your Gemini API key:\n\nCurrent: ${currentGemini ? '***' + currentGemini.slice(-4) : 'Not set'}\n\nGet one at: https://aistudio.google.com/app/apikey`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (geminiResponse.getSelectedButton() === ui.Button.OK) {
+    const geminiKey = geminiResponse.getResponseText().trim();
+    if (geminiKey) {
+      props.setProperty('GEMINI_API_KEY', geminiKey);
+      console.log('✅ Gemini API Key saved');
+    }
+  }
+
+  // Spreadsheet ID
+  const spreadsheetResponse = ui.prompt(
+    'Setup: Spreadsheet ID',
+    `Enter your Google Sheets ID:\n\nCurrent: ${currentSpreadsheet || 'Not set'}\n\nFind it in your sheet URL:\nhttps://docs.google.com/spreadsheets/d/[SPREADSHEET_ID]/edit`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (spreadsheetResponse.getSelectedButton() === ui.Button.OK) {
+    const spreadsheetId = spreadsheetResponse.getResponseText().trim();
+    if (spreadsheetId) {
+      props.setProperty('SPREADSHEET_ID', spreadsheetId);
+      console.log('✅ Spreadsheet ID saved');
+    }
+  }
+
+  // GitHub Token
+  const githubResponse = ui.prompt(
+    'Setup: GitHub Token',
+    `Enter your GitHub personal access token:\n\nCurrent: ${currentGithub ? '***' + currentGithub.slice(-4) : 'Not set'}\n\nCreate one at:\nhttps://github.com/settings/tokens\n(Need: repo scope)`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (githubResponse.getSelectedButton() === ui.Button.OK) {
+    const githubToken = githubResponse.getResponseText().trim();
+    if (githubToken) {
+      props.setProperty('GITHUB_TOKEN', githubToken);
+      console.log('✅ GitHub Token saved');
+    }
+  }
+
+  ui.alert(
+    'Setup Complete',
+    'Script Properties have been saved securely.\n\nRun "Check Configuration" to verify everything is set up correctly.',
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Check if all required configuration is set
+ */
+function checkConfiguration() {
+  const config = getConfig();
+
+  const status = {
+    gemini: config.GEMINI_API_KEY ? '✅ Set' : '❌ Missing',
+    spreadsheet: config.SPREADSHEET_ID ? '✅ Set' : '❌ Missing',
+    github: config.GITHUB_TOKEN ? '✅ Set' : '⚠️ Optional (needed for GitHub push)'
+  };
+
+  const message = `Configuration Status:
+
+Gemini API Key: ${status.gemini}
+Spreadsheet ID: ${status.spreadsheet}
+GitHub Token: ${status.github}
+
+${!config.GEMINI_API_KEY || !config.SPREADSHEET_ID ? '\n⚠️ Run "Setup Script Properties" to configure missing items.' : '✅ All required settings configured!'}`;
+
+  console.log(message);
+
+  try {
+    SpreadsheetApp.getUi().alert('Configuration Check', message, SpreadsheetApp.getUi().ButtonSet.OK);
+  } catch (e) {
+    console.log("UI alert skipped (Automation mode).");
+  }
+}
+
 function getTargetSheet() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const config = getConfig();
+  const spreadsheetId = config.SPREADSHEET_ID || SPREADSHEET_ID;
+
+  if (!spreadsheetId) {
+    throw new Error("SPREADSHEET_ID not configured. Set it in Script Properties or in code.");
+  }
+
+  const ss = SpreadsheetApp.openById(spreadsheetId);
   let sheet = ss.getSheetByName(DATA_SHEET_NAME);
   if (!sheet) sheet = ss.insertSheet(DATA_SHEET_NAME);
   return sheet;
@@ -187,9 +366,9 @@ function resetStatusToPending(resetAll = true) {
 function enrichNewBeans() {
   console.log("🚀 Starting Master Enrichment...");
 
-  // === ⚙️ Core Configuration ===
-  const SLEEP_SECONDS = 2;        // Normal cooldown (seconds)
-  const ERROR_SLEEP_SECONDS = 120; // Error recovery cooldown (seconds)
+  // === ⚙️ Core Configuration (from top of script) ===
+  const SLEEP_SECONDS = ENRICH_SLEEP_SECONDS;
+  const ERROR_SLEEP_SECONDS = ENRICH_ERROR_SLEEP_SECONDS;
   // ================================
 
   // === 💰 Cost Tracking ===
@@ -486,14 +665,157 @@ function enrichSingleBean(desc, priceStr) {
 }
 
 /**
- * 📝 CORE 3: WEEKLY REPORT GENERATOR
- * FEATURES ADDED:
- * 1. 🛡️ 30-Day Cooldown: Checks Column 39 (Last Promoted Date).
- * 2. 🛡️ Shop Diversity: Tries to pick 3 beans from different shops.
- * 3. 🛡️ Strict Prompt: Uses your exact requested Chinese prompt.
+ * 📝 CORE 3: WEEKLY REPORT GENERATOR (v2.0 - Multi-Dimensional Scoring + Hybrid AI Selection)
+ * FEATURES:
+ * 1. 🎯 JavaScript pre-scoring (Quality + Seasonality + Value + Versatility)
+ * 2. 🤖 Two-phase AI selection:
+ *    - Phase 1: AI picks 2+2 from top 10+10 candidates (with descriptions for context)
+ *    - Phase 2: AI generates full bilingual report for selected beans
+ * 3. 🛡️ 30-Day Cooldown + Shop Diversity
+ * 4. ✅ Fixes duplicate beans and wrong category issues
  */
+
+// ============= SCORING FUNCTIONS =============
+
+function calculateQualityScore(bean) {
+  let score = 2.0; // Base score
+
+  const variety = (bean.variety || "").toLowerCase();
+  const process = (bean.process || "").toLowerCase();
+  const name = (bean.name || "").toLowerCase();
+
+  // Premium varieties (+3)
+  const premiumVarieties = ['gesha', 'geisha', 'pink bourbon', 'pacamara', 'eugenioides',
+                            'sidra', 'wush wush', 'laurina', 'sudan rume'];
+  if (premiumVarieties.some(pv => variety.includes(pv))) {
+    score += 3;
+  }
+
+  // Rare variety flag (+2)
+  if (bean.is_rare === true || bean.is_rare === 'TRUE') {
+    score += 2;
+  }
+
+  // Special process (+2)
+  const specialProcesses = ['anaerobic', 'carbonic', 'koji', 'co-ferment', 'extended fermentation'];
+  if (specialProcesses.some(sp => process.includes(sp))) {
+    score += 2;
+  }
+
+  // Micro lot (+1)
+  if (bean.is_microlot === true || bean.is_microlot === 'TRUE') {
+    score += 1;
+  }
+
+  // Famous farms/producers (+1)
+  const famousFarms = ['granja paraiso', 'wilton benitez', 'finca deborah', 'ninety plus',
+                       'el diviso', 'altieri', 'finca la esmeralda'];
+  if (famousFarms.some(farm => name.includes(farm))) {
+    score += 1;
+  }
+
+  // Competition (+2)
+  if (/\b(coe|competition|auction)\b/i.test(name)) {
+    score += 2;
+  }
+
+  return Math.min(score, 10);
+}
+
+function calculateSeasonalityScore(bean) {
+  const seasonScores = {
+    'fresh arrival': 10,
+    'peak season': 8,
+    'late harvest': 5,
+    'past crop': 2
+  };
+
+  const season = (bean.season_status || "").toLowerCase();
+  let score = seasonScores[season] || 5;
+
+  // Freshness adjustment
+  const freshness = parseInt(bean.freshness_score) || 5;
+  if (freshness >= 9) {
+    score = Math.min(score + 1, 10);
+  } else if (freshness <= 6) {
+    score = Math.max(score - 1, 0);
+  }
+
+  return score;
+}
+
+function calculateVersatilityScore(bean, brewMethod) {
+  const roast = (bean.roast || "").toLowerCase();
+
+  let score = 5; // Default
+
+  if (brewMethod === 'filter') {
+    if (roast.includes('light') && !roast.includes('medium')) {
+      score = 10;
+    } else if (roast.includes('light-medium') || roast.includes('light medium')) {
+      score = 8;
+    } else if (roast.includes('medium') && !roast.includes('dark')) {
+      score = 6;
+    } else if (roast.includes('medium-dark') || roast.includes('medium dark')) {
+      score = 3;
+    } else if (roast.includes('dark')) {
+      score = 1;
+    }
+  } else { // espresso
+    if (roast.includes('dark') && !roast.includes('medium')) {
+      score = 10;
+    } else if (roast.includes('medium-dark') || roast.includes('medium dark')) {
+      score = 10;
+    } else if (roast.includes('medium') && !roast.includes('light')) {
+      score = 9;
+    } else if (roast.includes('light-medium') || roast.includes('light medium')) {
+      score = 7;
+    } else if (roast.includes('light')) {
+      score = 5;
+    }
+  }
+
+  // Bonus for clear tasting notes
+  const flavors = bean.flavors || "";
+  if (flavors.length > 20) {
+    score = Math.min(score + 1, 10);
+  }
+
+  // Bonus for high freshness
+  const freshness = parseInt(bean.freshness_score) || 5;
+  if (freshness > 7) {
+    score = Math.min(score + 1, 10);
+  }
+
+  return score;
+}
+
+function calculateRecommendationScore(bean, brewMethod) {
+  const quality = calculateQualityScore(bean);
+  const seasonality = calculateSeasonalityScore(bean);
+  const value = parseFloat(bean.value_score) || 5.0;
+  const versatility = calculateVersatilityScore(bean, brewMethod);
+
+  // Weighted combination using configured weights
+  const finalScore =
+    (quality * SCORING_WEIGHTS.quality) +
+    (seasonality * SCORING_WEIGHTS.seasonality) +
+    (value * SCORING_WEIGHTS.value) +
+    (versatility * SCORING_WEIGHTS.versatility);
+
+  return {
+    quality: quality,
+    seasonality: seasonality,
+    value: value,
+    versatility: versatility,
+    final: finalScore
+  };
+}
+
+// ============= MAIN FUNCTION =============
+
 function generateWeeklyPost() {
-  console.log("☕ Starting Weekly Post (Cooldown + Diversity + Strict Prompt)...");
+  console.log("☕ Starting Weekly Post (v2.0 - Multi-Dimensional Scoring + Hybrid AI)...");
 
   const sheet = getTargetSheet();
   const data = sheet.getDataRange().getValues();
@@ -505,6 +827,7 @@ function generateWeeklyPost() {
     price: headers.indexOf("Price"),
     weight: headers.indexOf("Weight"),
     stock: headers.indexOf("Stock"),
+    desc: headers.indexOf("Description"),
     url: headers.indexOf("URL"),
     roastDate: headers.indexOf("Roast Date"),
     country: headers.indexOf("Country"),
@@ -516,7 +839,9 @@ function generateWeeklyPost() {
     flavors: headers.indexOf("Flavor Keywords"),
     inSeason: headers.indexOf("In Season (Status)"),
     seasonReason: headers.indexOf("Seasonality Reason"),
+    freshnessScore: headers.indexOf("Freshness Score"),
     isRare: headers.indexOf("Is Rare"),
+    isMicrolot: headers.indexOf("Micro Lot"),
     valueScore: headers.indexOf("Value Score"),
     status: headers.indexOf("Status"),
     updatedAt: headers.indexOf("Updated At"),
@@ -524,8 +849,9 @@ function generateWeeklyPost() {
   };
 
   const today = new Date();
-  const COOLDOWN_DAYS = 30; // Promotion cooldown period (30 days)
-  const FRESHNESS_DAYS = 14; // Only consider beans synced in last 14 days
+  // Use configured values from top of script
+  const cooldownDays = COOLDOWN_DAYS;
+  const freshnessDays = FRESHNESS_DAYS;
 
   const beans = [];
   for (let i = 1; i < data.length; i++) {
@@ -538,18 +864,18 @@ function generateWeeklyPost() {
       let isFresh = false;
       if (updatedAt instanceof Date) {
         const daysSinceUpdate = Math.ceil((today - updatedAt) / (1000 * 60 * 60 * 24));
-        if (daysSinceUpdate <= FRESHNESS_DAYS) isFresh = true;
+        if (daysSinceUpdate <= freshnessDays) isFresh = true;
       }
 
       if (!isFresh) continue; // Skip stale data
 
-      // 🛡️ 30-day promotion cooldown check
+      // 🛡️ Promotion cooldown check
       const lastDate = row[idx.lastPromoted];
       let isCool = true;
       if (lastDate instanceof Date) {
         const diffTime = Math.abs(today - lastDate);
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        if (diffDays < COOLDOWN_DAYS) isCool = false;
+        if (diffDays < cooldownDays) isCool = false;
       }
 
       if (isCool) {
@@ -570,95 +896,243 @@ function generateWeeklyPost() {
           season_status: row[idx.inSeason],
           season_reason: row[idx.seasonReason],
           is_rare: row[idx.isRare],
-          value_score: row[idx.valueScore]
+          is_microlot: row[idx.isMicrolot],
+          freshness_score: row[idx.freshnessScore],
+          value_score: row[idx.valueScore],
+          description: row[idx.desc] // Need for AI Phase 1
         });
       }
     }
   }
 
   if (beans.length === 0) {
-    console.log(`No beans available (filters: freshness <${FRESHNESS_DAYS} days, cooldown >${COOLDOWN_DAYS} days).`);
+    console.log(`No beans available (filters: freshness <${freshnessDays} days, cooldown >${cooldownDays} days).`);
     return;
   }
 
   console.log(`✅ Found ${beans.length} candidate beans after freshness & cooldown filters.`);
 
-  // === 2. Smart Selection (2 Pour Over + 2 Espresso) ===
+  // === 2. Apply Multi-Dimensional Scoring ===
 
-  // Separate beans by usage
-  const filterBeans = beans.filter(b => {
+  console.log("🎯 Calculating multi-dimensional scores...");
+
+  const scoredBeans = beans.map(b => {
+    const filterScores = calculateRecommendationScore(b, 'filter');
+    const espressoScores = calculateRecommendationScore(b, 'espresso');
+
+    return {
+      ...b,
+      filter_quality: filterScores.quality,
+      filter_seasonality: filterScores.seasonality,
+      filter_value: filterScores.value,
+      filter_versatility: filterScores.versatility,
+      filter_score: filterScores.final,
+      espresso_quality: espressoScores.quality,
+      espresso_seasonality: espressoScores.seasonality,
+      espresso_value: espressoScores.value,
+      espresso_versatility: espressoScores.versatility,
+      espresso_score: espressoScores.final
+    };
+  });
+
+  console.log(`✅ Scored ${scoredBeans.length} beans with quality/seasonality/value/versatility.`);
+
+  // === 3. Improved Category Filtering (Fix duplicate/wrong category issues) ===
+
+  const filterBeans = scoredBeans.filter(b => {
     const usage = (b.usage || "").toString().toLowerCase();
     const roast = (b.roast || "").toString().toLowerCase();
-    // Include: Filter, V60, or Omni (but prefer light/medium roasts for Omni)
+    const name = (b.name || "").toString().toLowerCase();
+
+    // Exclude beans explicitly named as "Espresso" products (unless also tagged for filter)
+    if (name.includes("espresso") && !usage.includes("filter") && !usage.includes("v60")) {
+      return false;
+    }
+
+    // Include: Filter, V60 usage
     if (usage.includes("filter") || usage.includes("v60")) return true;
-    if (usage.includes("omni") && (roast.includes("light") || roast.includes("medium"))) return true;
+
+    // For Omni beans: Only include if Light roast (avoid overlap with espresso)
+    if (usage.includes("omni")) {
+      // Only light roast (not light-medium, not medium)
+      if (roast.includes("light") && !roast.includes("medium")) {
+        return true;
+      }
+    }
+
     return false;
   });
 
-  const espressoBeans = beans.filter(b => {
+  const espressoBeans = scoredBeans.filter(b => {
     const usage = (b.usage || "").toString().toLowerCase();
     const roast = (b.roast || "").toString().toLowerCase();
-    // Include: Espresso, or Omni (but prefer medium/dark roasts for Omni)
+
+    // Include: Espresso usage
     if (usage.includes("espresso")) return true;
-    if (usage.includes("omni") && (roast.includes("medium") || roast.includes("dark"))) return true;
+
+    // For Omni beans: Include if Medium or darker (but not Light-Medium to avoid light roasts)
+    if (usage.includes("omni")) {
+      const isLightMedium = roast.includes("light") && roast.includes("medium");
+      const isMediumOrDarker = roast.includes("medium") || roast.includes("dark");
+
+      // Include if medium/dark but NOT light-medium
+      if (isMediumOrDarker && !isLightMedium) {
+        return true;
+      }
+    }
+
     return false;
   });
 
   console.log(`Filter candidates: ${filterBeans.length}, Espresso candidates: ${espressoBeans.length}`);
 
-  // Debug: Show first few beans' usage values
-  if (filterBeans.length === 0 && espressoBeans.length === 0 && beans.length > 0) {
+  if (filterBeans.length === 0 && espressoBeans.length === 0 && scoredBeans.length > 0) {
     console.log("⚠️ Debug: No beans classified. Checking first 3 beans:");
-    beans.slice(0, 3).forEach((b, i) => {
-      console.log(`  Bean ${i+1}: usage="${b.usage}", roast="${b.roast}"`);
+    scoredBeans.slice(0, 3).forEach((b, i) => {
+      console.log(`  Bean ${i+1}: usage="${b.usage}", roast="${b.roast}", name="${b.name.substring(0, 40)}"`);
     });
   }
 
-  // Sort by value score for selection
-  const filterSorted = [...filterBeans].sort((a, b) => b.value_score - a.value_score);
-  const espressoSorted = [...espressoBeans].sort((a, b) => b.value_score - a.value_score);
+  // Sort by NEW recommendation score (not old value_score)
+  const filterSorted = [...filterBeans].sort((a, b) => b.filter_score - a.filter_score);
+  const espressoSorted = [...espressoBeans].sort((a, b) => b.espresso_score - a.espresso_score);
 
-  // Pick 2 pour over beans (prioritize: rare/season + value)
-  const filterPick1 = filterSorted.find(b =>
-    b.is_rare === true || (b.season_status || "").toString().match(/Fresh|Peak/i)
-  ) || filterSorted[0];
+  // Get top N candidates for each category (configured at top of script)
+  const filterTopN = filterSorted.slice(0, TOP_CANDIDATES_COUNT);
+  const espressoTopN = espressoSorted.slice(0, TOP_CANDIDATES_COUNT);
 
-  const filterPick2 = filterSorted.find(b =>
-    b !== filterPick1 &&
-    b.shop !== filterPick1?.shop
-  ) || filterSorted[1];
+  console.log(`\n🎯 Top ${TOP_CANDIDATES_COUNT} Pour-Over Candidates (by recommendation_score):`);
+  filterTopN.forEach((b, i) => {
+    console.log(`  ${i+1}. [${b.filter_score.toFixed(2)}] ${b.shop} - ${b.name.substring(0, 45)}`);
+    console.log(`      Q:${b.filter_quality.toFixed(1)} S:${b.filter_seasonality.toFixed(1)} V:${b.filter_value.toFixed(1)} Ver:${b.filter_versatility.toFixed(1)}`);
+  });
 
-  // Pick 2 espresso beans (prioritize: rare/season + value)
-  const espressoPick1 = espressoSorted.find(b =>
-    b.is_rare === true || (b.season_status || "").toString().match(/Fresh|Peak/i)
-  ) || espressoSorted[0];
+  console.log(`\n🎯 Top ${TOP_CANDIDATES_COUNT} Espresso Candidates (by recommendation_score):`);
+  espressoTopN.forEach((b, i) => {
+    console.log(`  ${i+1}. [${b.espresso_score.toFixed(2)}] ${b.shop} - ${b.name.substring(0, 45)}`);
+    console.log(`      Q:${b.espresso_quality.toFixed(1)} S:${b.espresso_seasonality.toFixed(1)} V:${b.espresso_value.toFixed(1)} Ver:${b.espresso_versatility.toFixed(1)}`);
+  });
 
-  const espressoPick2 = espressoSorted.find(b =>
-    b !== espressoPick1 &&
-    b.shop !== espressoPick1?.shop
-  ) || espressoSorted[1];
-
-  const selection = {
-    filter: [filterPick1, filterPick2].filter(Boolean),
-    espresso: [espressoPick1, espressoPick2].filter(Boolean)
-  };
-
-  console.log(`Selected Pour Over (${selection.filter.length}): ${selection.filter.map(b => b?.shop).join(", ")}`);
-  console.log(`Selected Espresso (${selection.espresso.length}): ${selection.espresso.map(b => b?.shop).join(", ")}`);
-
-  // Check if we have enough beans
-  if (selection.filter.length < 2) {
-    console.log(`⚠️ Warning: Only ${selection.filter.length} pour over beans available (need 2)`);
-  }
-  if (selection.espresso.length < 2) {
-    console.log(`⚠️ Warning: Only ${selection.espresso.length} espresso beans available (need 2)`);
-  }
-  if (selection.filter.length === 0 && selection.espresso.length === 0) {
-    console.log("❌ No beans available for report generation");
+  if (filterTopN.length < 2 || espressoTopN.length < 2) {
+    console.log(`❌ Not enough candidates (Filter: ${filterTopN.length}, Espresso: ${espressoTopN.length})`);
     return;
   }
 
-  // === 3. Bilingual Prompt (Chinese for RedNote + English for Instagram) ===
+  // === 4. AI PHASE 1: Bean Selection (with full context including descriptions) ===
+
+  console.log(`\n🤖 AI Phase 1: Selecting 2 pour-over + 2 espresso from top ${TOP_CANDIDATES_COUNT} candidates each...`);
+
+  // Prepare compact data for selection (with descriptions for context!)
+  const prepareSelectionData = (bean, index) => {
+    // Calculate price per gram safely
+    let pricePerGram = 0;
+    if (bean.price_per_g) {
+      pricePerGram = parseFloat(bean.price_per_g);
+    } else if (bean.price && bean.weight) {
+      // Handle both string ("$20.00") and number (20.00) formats
+      const priceValue = typeof bean.price === 'string'
+        ? parseFloat(bean.price.replace('$', ''))
+        : parseFloat(bean.price);
+      const weightValue = parseFloat(bean.weight);
+      if (!isNaN(priceValue) && !isNaN(weightValue) && weightValue > 0) {
+        pricePerGram = priceValue / weightValue;
+      }
+    }
+
+    return {
+      index: index + 1,
+      shop: bean.shop,
+      name: bean.name,
+      description: bean.description, // ← OPTION B: Include description for context
+      variety: bean.variety,
+      process: bean.process,
+      roast: bean.roast,
+      usage: bean.usage,
+      season_status: bean.season_status,
+      is_rare: bean.is_rare,
+      price_per_g: pricePerGram,
+      quality_score: bean.filter_quality || bean.espresso_quality,
+      seasonality_score: bean.filter_seasonality || bean.espresso_seasonality,
+      value_score: bean.value_score,
+      recommendation_score: bean.filter_score || bean.espresso_score
+    };
+  };
+
+  const selectionData = {
+    pour_over_candidates: filterTopN.map((b, i) => prepareSelectionData(b, i)),
+    espresso_candidates: espressoTopN.map((b, i) => prepareSelectionData(b, i))
+  };
+
+  const selectionPrompt = buildSelectionPrompt(selectionData);
+
+  let selectionResult;
+  try {
+    const rawSelection = callGeminiAPI(selectionPrompt, false, REPORT_MODEL);
+    // Clean potential markdown wrapper
+    const cleaned = rawSelection.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    selectionResult = JSON.parse(cleaned);
+
+    console.log("✅ AI Selection Complete:");
+    console.log(`   Pour-over picks: ${selectionResult.pour_over_picks.join(", ")}`);
+    console.log(`   Espresso picks: ${selectionResult.espresso_picks.join(", ")}`);
+    console.log(`   Reasoning: ${selectionResult.reasoning}`);
+
+  } catch (e) {
+    console.error("❌ AI Selection failed:", e.message);
+    console.log("Falling back to JavaScript selection (top 2 from each category)...");
+
+    // Fallback: Just pick top 2 from each
+    selectionResult = {
+      pour_over_picks: filterTopN.slice(0, 2).map(b => b.name),
+      espresso_picks: espressoTopN.slice(0, 2).map(b => b.name),
+      reasoning: "Fallback to top-scored beans due to AI selection error"
+    };
+  }
+
+  // Find selected beans in original arrays
+  const findBeanByName = (beans, nameFromAI) => {
+    // AI might return "Shop - Bean Name" or just "Bean Name"
+    // Try exact match first
+    let found = beans.find(b => b.name === nameFromAI);
+
+    if (!found) {
+      // Try removing shop prefix if AI included it
+      // Format: "Rogue Wave - Panama - Bambito Estate..." → "Panama - Bambito Estate..."
+      const withoutShop = nameFromAI.replace(/^[^-]+-\s*/, '').trim();
+      found = beans.find(b => b.name === withoutShop);
+    }
+
+    if (!found) {
+      // Try partial match (bean name contains the search string or vice versa)
+      found = beans.find(b =>
+        b.name.includes(nameFromAI) ||
+        nameFromAI.includes(b.name) ||
+        (b.shop + ' - ' + b.name) === nameFromAI
+      );
+    }
+
+    if (!found) {
+      console.log(`⚠️ Could not find bean: "${nameFromAI}"`);
+      console.log(`Available beans: ${beans.slice(0, 3).map(b => `"${b.name}"`).join(', ')}...`);
+    }
+
+    return found;
+  };
+
+  const selection = {
+    filter: selectionResult.pour_over_picks.map(name => findBeanByName(scoredBeans, name)).filter(Boolean),
+    espresso: selectionResult.espresso_picks.map(name => findBeanByName(scoredBeans, name)).filter(Boolean)
+  };
+
+  if (selection.filter.length < 2 || selection.espresso.length < 2) {
+    console.log(`❌ AI selection incomplete (Filter: ${selection.filter.length}, Espresso: ${selection.espresso.length})`);
+    return;
+  }
+
+  // === 5. AI PHASE 2: Generate Bilingual Content ===
+
+  console.log("\n🤖 AI Phase 2: Generating bilingual content for selected beans...");
+
   const beansData = {
     filter: selection.filter,
     espresso: selection.espresso
@@ -1045,11 +1519,8 @@ function pushToGitHub(content, language, date) {
     }
 
     // Get GitHub token from Script Properties
-    let token = GITHUB_TOKEN;
-    if (!token) {
-      const props = PropertiesService.getScriptProperties();
-      token = props.getProperty('GITHUB_TOKEN');
-    }
+    const config = getConfig();
+    const token = config.GITHUB_TOKEN || GITHUB_TOKEN;
 
     if (!token) {
       console.error("❌ GitHub token not configured. Set GITHUB_TOKEN in Script Properties.");
@@ -1133,7 +1604,14 @@ function pushToGitHub(content, language, date) {
 }
 
 function callGeminiAPI(text, forceJson, modelName) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+  const config = getConfig();
+  const apiKey = config.GEMINI_API_KEY || GEMINI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY not configured. Set it in Script Properties or in code.");
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
   const payload = {
     contents: [{ parts: [{ text: text }] }],
     generationConfig: forceJson ? { responseMimeType: "application/json" } : undefined
@@ -1150,6 +1628,60 @@ function callGeminiAPI(text, forceJson, modelName) {
   const json = JSON.parse(resp.getContentText());
   if (json.error) throw new Error(json.error.message);
   return json.candidates[0].content.parts[0].text;
+}
+
+/**
+ * Build AI Phase 1 selection prompt
+ */
+function buildSelectionPrompt(selectionData) {
+  const formatCandidate = (bean) => {
+    return `${bean.index}. ${bean.shop} - ${bean.name}
+   Variety: ${bean.variety || 'N/A'} | Process: ${bean.process || 'N/A'}
+   Roast: ${bean.roast || 'N/A'} | Usage: ${bean.usage || 'N/A'}
+   Season: ${bean.season_status || 'N/A'} | Rare: ${bean.is_rare || 'No'}
+   Price: $${bean.price_per_g ? bean.price_per_g.toFixed(3) : 'N/A'}/g
+   Scores - Quality: ${bean.quality_score.toFixed(1)}/10, Seasonality: ${bean.seasonality_score.toFixed(1)}/10, Value: ${bean.value_score}/10
+   Description: ${(bean.description || '').substring(0, 300)}...
+`;
+  };
+
+  return `You are a specialty coffee consultant selecting weekly coffee recommendations for Vancouver.
+
+TASK: Select 2 pour-over and 2 espresso beans from the candidates below.
+
+SELECTION CRITERIA (in priority order):
+1. **No duplicates**: Same bean cannot appear in both categories
+2. **No mismatched usage**: Beans explicitly named "Espresso" should not be selected for pour-over
+3. **Prioritize specialty attributes**: Rare varieties (Geisha, Pink Bourbon), special processes (Anaerobic), fresh arrivals, famous farms
+4. **Shop diversity**: Prefer selecting beans from different shops when possible
+5. **Balance**: Mix of premium/rare beans with accessible/value options
+
+SCORING GUIDE:
+- Quality Score (0-10): Specialty attributes (rare varieties, special processes, famous farms)
+- Seasonality Score (0-10): Freshness and crop timing
+- Value Score (0-10): Price fairness for the category
+
+IMPORTANT CONTEXT CLUES IN DESCRIPTIONS:
+- "Nano lot", "Limited edition", "40kg only" → Very limited availability
+- "Competition", "Award", "COE" → Competition recognition
+- "Legendary", "Famous", "Renowned" → Prestigious producer
+- "Granja Paraiso", "Wilton Benitez", "Finca Deborah" → Famous farms
+- "Indigenous community", "Family-run since 19XX" → Story/provenance
+
+POUR-OVER CANDIDATES (Top ${selectionData.pour_over_candidates.length}):
+${selectionData.pour_over_candidates.map(formatCandidate).join('\n')}
+
+ESPRESSO CANDIDATES (Top ${selectionData.espresso_candidates.length}):
+${selectionData.espresso_candidates.map(formatCandidate).join('\n')}
+
+OUTPUT FORMAT (return valid JSON only, no markdown):
+{
+  "pour_over_picks": ["Bean name 1 WITHOUT shop prefix", "Bean name 2 WITHOUT shop prefix"],
+  "espresso_picks": ["Bean name 3 WITHOUT shop prefix", "Bean name 4 WITHOUT shop prefix"],
+  "reasoning": "Brief explanation (2-3 sentences) of why you selected these beans, highlighting key attributes like rare varieties, seasonality, famous farms, or special processes."
+}
+
+IMPORTANT: Return ONLY the bean name as shown in the "name" field above (e.g., "Panama - Bambito Estate Geisha | Washed - 100g"), do NOT include the shop name prefix (e.g., do NOT return "Rogue Wave - Panama - Bambito Estate...").`;
 }
 
 // ================= FETCHERS (Deduplication Logic Integrated in syncCoffeeData) =================
