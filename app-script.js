@@ -275,23 +275,27 @@ function syncCoffeeData() {
         item.stock,
         item.desc,
         item.url,
+        item.imageUrl || "", // Image URL (Column 8)
         item.roastDate,
         new Date(),
-        "", "", "", "", "", "", "", "", "", "", "", "",         // 10-21 (12 fields)
-        "", "", "", "", "", "", "", "", "", "", "", "",         // 22-33 (12 fields)
-        "PENDING",       // 34 Status
-        ""               // 35 Last Promoted Date (Empty initially)
+        "", "", "", "", "", "", "", "", "", "", "", "",         // 11-22 (12 fields)
+        "", "", "", "", "", "", "", "", "", "", "", "",         // 23-34 (12 fields)
+        "PENDING",       // 35 Status
+        ""               // 36 Last Promoted Date (Empty initially)
       ]);
       newCount++;
       // Add to map to prevent dupes within the same fetch batch
       existingMap.set(key, "just_added");
     } else {
-      // --- EXISTING BEAN (Update Stock/Price) ---
+      // --- EXISTING BEAN (Update Stock/Price/Image) ---
       const rowIndex = existingMap.get(key);
       if (rowIndex !== "just_added") {
         sheet.getRange(rowIndex, 3).setValue(item.price);
         sheet.getRange(rowIndex, 5).setValue(item.stock);
-        sheet.getRange(rowIndex, 9).setValue(new Date());
+        if (item.imageUrl) {
+          sheet.getRange(rowIndex, 8).setValue(item.imageUrl); // Update image URL
+        }
+        sheet.getRange(rowIndex, 10).setValue(new Date()); // Updated At is column 10
         updateCount++;
       }
     }
@@ -319,7 +323,7 @@ function resetStatusToPending(resetAll = true) {
   }
 
   // Read current status values
-  const statusRange = sheet.getRange(2, 34, lastRow - 1, 1);
+  const statusRange = sheet.getRange(2, 35, lastRow - 1, 1); // Status column (35)
   const statuses = statusRange.getValues();
 
   let resetCount = 0;
@@ -384,7 +388,7 @@ function enrichNewBeans() {
 
   if (lastRow < 2) return;
 
-  const range = sheet.getRange(2, 1, lastRow - 1, 35);
+  const range = sheet.getRange(2, 1, lastRow - 1, 36); // Read all 36 columns
   const values = range.getValues();
   let processedCount = 0;
 
@@ -395,13 +399,13 @@ function enrichNewBeans() {
     const priceStr = row[2];
     const stock = row[4];
     const rawDesc = row[5];
-    const status = row[33]; // Column 34 (0-indexed)
+    const status = row[34]; // Column 35 (0-indexed)
 
     if (status === "PENDING") {
 
       if (stock !== "In Stock") {
         console.log(`⏩ Skipping Row ${i+2} (${beanName}): Sold Out`);
-        sheet.getRange(i + 2, 34).setValue("SKIPPED");
+        sheet.getRange(i + 2, 35).setValue("SKIPPED"); // Status column (35)
         SpreadsheetApp.flush();
         continue;
       }
@@ -435,8 +439,8 @@ function enrichNewBeans() {
               getVal("recommend_reason")
             ];
 
-            // Write enrichment data (24 fields starting at column 10)
-            sheet.getRange(i + 2, 10, 1, 24).setValues([rowData]);
+            // Write enrichment data (24 fields starting at column 11: Country)
+            sheet.getRange(i + 2, 11, 1, 24).setValues([rowData]);
 
             // Write extracted weight directly to Column 4 (Weight)
             const weight = getVal("weight_extracted");
@@ -444,7 +448,7 @@ function enrichNewBeans() {
               sheet.getRange(i + 2, 4).setValue(weight);
             }
 
-            sheet.getRange(i + 2, 34).setValue("COMPLETED");
+            sheet.getRange(i + 2, 35).setValue("COMPLETED"); // Status column (35)
 
             SpreadsheetApp.flush();
 
@@ -465,7 +469,7 @@ function enrichNewBeans() {
               console.log(`🛑 Rate Limit Hit! Sleeping for ${ERROR_SLEEP_SECONDS}s...`);
               Utilities.sleep(ERROR_SLEEP_SECONDS * 1000);
             } else {
-              sheet.getRange(i + 2, 34).setValue("ERROR");
+              sheet.getRange(i + 2, 35).setValue("ERROR"); // Status column (35)
               SpreadsheetApp.flush();
               break;
             }
@@ -812,6 +816,42 @@ function calculateRecommendationScore(bean, brewMethod) {
   };
 }
 
+/**
+ * Post-processes markdown content to insert product images
+ * @param {string} markdown - The markdown content from AI
+ * @param {Array} beans - Array of bean objects with url and image_url
+ * @returns {string} - Markdown with images inserted
+ */
+function insertProductImages(markdown, beans) {
+  let result = markdown;
+
+  beans.forEach(bean => {
+    if (!bean.url || !bean.image_url) {
+      console.log(`⚠️ Skipping image for ${bean.name} (missing URL or image URL)`);
+      return;
+    }
+
+    // Escape special regex characters in URL
+    const urlEscaped = bean.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Find heading with this bean's URL: ### ... [bean name](url)\n
+    // Insert image line right after the heading
+    const pattern = new RegExp(`(###[^\\n]*\\]\\(${urlEscaped}\\)\\n)`, 'g');
+    const imageMarkdown = `\n![${bean.name}](${bean.image_url})\n`;
+
+    const beforeReplace = result;
+    result = result.replace(pattern, `$1${imageMarkdown}`);
+
+    if (result === beforeReplace) {
+      console.log(`⚠️ Could not find heading for: ${bean.name}`);
+    } else {
+      console.log(`✅ Inserted image for: ${bean.name}`);
+    }
+  });
+
+  return result;
+}
+
 // ============= MAIN FUNCTION =============
 
 function generateWeeklyPost() {
@@ -829,6 +869,7 @@ function generateWeeklyPost() {
     stock: headers.indexOf("Stock"),
     desc: headers.indexOf("Description"),
     url: headers.indexOf("URL"),
+    imageUrl: headers.indexOf("Image URL"),
     roastDate: headers.indexOf("Roast Date"),
     country: headers.indexOf("Country"),
     region: headers.indexOf("Region"),
@@ -886,6 +927,7 @@ function generateWeeklyPost() {
           price: row[idx.price],
           weight: row[idx.weight],
           url: row[idx.url],
+          image_url: row[idx.imageUrl], // Product image
           roast_date: formatDate(row[idx.roastDate]),
           origin: `${row[idx.country]} ${row[idx.region]}`,
           variety: row[idx.variety],
@@ -1133,9 +1175,15 @@ function generateWeeklyPost() {
 
   console.log("\n🤖 AI Phase 2: Generating bilingual content for selected beans...");
 
+  // Prepare bean data for AI (exclude image_url to avoid JSON issues)
+  const prepareForAI = (beans) => beans.map(b => {
+    const { image_url, ...rest } = b; // Remove image_url
+    return rest;
+  });
+
   const beansData = {
-    filter: selection.filter,
-    espresso: selection.espresso
+    filter: prepareForAI(selection.filter),
+    espresso: prepareForAI(selection.espresso)
   };
   const beansJson = JSON.stringify(beansData, null, 2);
 
@@ -1198,6 +1246,7 @@ function generateWeeklyPost() {
 
     ### 推荐 1: [豆子名称](url)
 
+
     #### 基本信息
     - 烘焙商：[店名]
     - 产地：[产地]
@@ -1225,6 +1274,8 @@ function generateWeeklyPost() {
     - 研磨：[粗细]
 
     ### 推荐 2: [豆子名称](url)
+
+
     [重复以上结构]
 
     ---
@@ -1232,6 +1283,7 @@ function generateWeeklyPost() {
     ## 意式豆推荐
 
     ### 推荐 1: [豆子名称](url)
+
 
     #### 基本信息
     - 烘焙商：[店名]
@@ -1259,6 +1311,8 @@ function generateWeeklyPost() {
     - 研磨：[细度]
 
     ### 推荐 2: [豆子名称](url)
+
+
     [重复以上结构]
 
     ---
@@ -1281,6 +1335,7 @@ function generateWeeklyPost() {
     ## Pour Over Recommendations
 
     ### Pick 1: [Bean Name](url)
+
 
     #### Coffee Profile
     - Roaster: [Shop]
@@ -1309,6 +1364,8 @@ function generateWeeklyPost() {
     - Grind: [coarseness]
 
     ### Pick 2: [Bean Name](url)
+
+
     [Repeat structure]
 
     ---
@@ -1316,6 +1373,7 @@ function generateWeeklyPost() {
     ## Espresso Recommendations
 
     ### Pick 1: [Bean Name](url)
+
 
     #### Coffee Profile
     - Roaster: [Shop]
@@ -1343,6 +1401,8 @@ function generateWeeklyPost() {
     - Grind: [fineness]
 
     ### Pick 2: [Bean Name](url)
+
+
     [Repeat structure]
 
     ---
@@ -1397,9 +1457,18 @@ function generateWeeklyPost() {
       // Try to parse as-is first
       bilingualContent = JSON.parse(rawResponse);
     } catch (parseError) {
-      // If wrapped in markdown code block, clean it
-      const cleaned = rawResponse.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      bilingualContent = JSON.parse(cleaned);
+      console.log("⚠️ Initial parse failed, attempting cleanup...");
+      try {
+        // If wrapped in markdown code block, clean it
+        const cleaned = rawResponse.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+        bilingualContent = JSON.parse(cleaned);
+      } catch (secondError) {
+        // Log the raw response to help debug
+        console.error("❌ JSON Parse Error:", secondError.message);
+        console.error("Raw response (first 500 chars):", rawResponse.substring(0, 500));
+        console.error("Raw response (chars 300-800):", rawResponse.substring(300, 800));
+        throw new Error(`Failed to parse AI response: ${secondError.message}`);
+      }
     }
 
     // Validate structure
@@ -1414,6 +1483,12 @@ function generateWeeklyPost() {
       console.error("English keys:", Object.keys(bilingualContent.english || {}));
       throw new Error("Response missing content field");
     }
+
+    // Post-process: Insert product images into markdown
+    console.log("🖼️ Inserting product images into markdown...");
+    const allBeans = [...selection.filter, ...selection.espresso];
+    bilingualContent.chinese.content = insertProductImages(bilingualContent.chinese.content, allBeans);
+    bilingualContent.english.content = insertProductImages(bilingualContent.english.content, allBeans);
 
     // Calculate output tokens
     const chineseLength = (bilingualContent.chinese.content || "").length;
@@ -1732,6 +1807,9 @@ function fetchShopify(shopName, domain) {
       let desc = (p.body_html || "").replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim();
       if (desc.length < 50) desc = p.title + ". " + desc;
 
+      // Get first product image
+      const imageUrl = (p.images && p.images.length > 0) ? p.images[0].src : "";
+
       return {
         shop: shopName,
         name: p.title,
@@ -1739,6 +1817,7 @@ function fetchShopify(shopName, domain) {
         stock: v.available ? "In Stock" : "Sold Out",
         desc: desc,
         url: `https://${domain}/products/${p.handle}`,
+        imageUrl: imageUrl,
         roastDate: "",
         type: p.product_type,
         tags: p.tags
@@ -1776,13 +1855,28 @@ function fetchSquarespace(shopName, domain) {
       // Get price from variant
       const price = v.priceMoney ? v.priceMoney.value : (v.price || 0);
 
+      // Get product image
+      const imageUrl = p.assetUrl || "";
+
+      // Construct full URL (Squarespace returns relative paths)
+      let fullUrl = p.fullUrl;
+      if (fullUrl && fullUrl.startsWith('/')) {
+        // fullUrl is relative but complete (e.g., "/shop/product-slug")
+        fullUrl = `https://www.${domain}${fullUrl}`;
+      } else if (!fullUrl || !fullUrl.startsWith('http')) {
+        // Fallback: construct from urlId (add /shop prefix)
+        const urlSlug = p.urlId || p.url || "";
+        fullUrl = `https://www.${domain}/shop/${urlSlug}`;
+      }
+
       return {
         shop: shopName,
         name: p.title,
         price: "$" + price,
         stock: inStock ? "In Stock" : "Sold Out",
         desc: desc,
-        url: p.fullUrl || `https://www.${domain}${p.urlId}`,
+        url: fullUrl,
+        imageUrl: imageUrl,
         roastDate: "",
         type: p.productType === 1 ? "coffee" : "product", // productType 1 = coffee
         tags: p.categories || []
@@ -1882,6 +1976,35 @@ function debugRogueWave() {
 }
 
 function debugPrototype() {
+  // First, let's fetch raw JSON to see what fields Squarespace provides
+  try {
+    const url = `https://www.prototypecoffee.ca/shop?format=json`;
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    const json = JSON.parse(response.getContentText());
+    const items = json.items || [];
+
+    console.log("=== RAW SQUARESPACE API DATA ===");
+    console.log(`Fetched ${items.length} items\n`);
+
+    if (items.length > 0) {
+      console.log("First product raw data:");
+      const p = items[0];
+      console.log(`Title: ${p.title}`);
+      console.log(`URL fields:`);
+      console.log(`  - fullUrl: ${p.fullUrl}`);
+      console.log(`  - urlId: ${p.urlId}`);
+      console.log(`  - url: ${p.url}`);
+      console.log(`  - id: ${p.id}`);
+      console.log(`Image fields:`);
+      console.log(`  - assetUrl: ${p.assetUrl}`);
+      console.log(`  - imageUrl: ${p.imageUrl}`);
+      console.log("\nFull object keys:", Object.keys(p).join(", "));
+    }
+  } catch (e) {
+    console.error("Debug error:", e.message);
+  }
+
+  console.log("\n=== PROCESSED DATA ===");
   const result = fetchSquarespace("Prototype", "prototypecoffee.ca");
   console.log(`Fetched ${result.length} products from Prototype (Squarespace)`);
 
@@ -1889,27 +2012,14 @@ function debugPrototype() {
     console.log("First 3 products:");
     result.slice(0, 3).forEach(p => {
       console.log(`  - Name: "${p.name}"`);
+      console.log(`    URL: "${p.url}"`);
       console.log(`    Type: "${p.type}"`);
       console.log(`    Stock: "${p.stock}"`);
-      console.log(`    Price: "${p.price}"`);
-      console.log(`    Weight: "${p.weight}"`);
     });
   }
 
   const filtered = filterForCoffee(result);
   console.log(`After filtering: ${filtered.length} coffee products`);
-
-  if (filtered.length === 0 && result.length > 0) {
-    console.log("❌ All products were filtered out!");
-    console.log("Checking filter logic...");
-    result.forEach(item => {
-      const name = item.name.toLowerCase();
-      const type = (item.type || "").toLowerCase();
-      const isCoffeeType = type.includes("coffee") || type.includes("bean") || type.includes("espresso");
-      const nameLooksLikeCoffee = name.includes("washed") || name.includes("natural") || name.includes("honey") || name.includes("g") || name.includes("lb");
-      console.log(`"${item.name}" - Type: "${type}", Coffee Type: ${isCoffeeType}, Name Match: ${nameLooksLikeCoffee}`);
-    });
-  }
 }
 
 // ================= INIT =================
@@ -1917,7 +2027,7 @@ function debugPrototype() {
 function setupHeaders() {
   const sheet = getTargetSheet();
   const headers = [
-    "Shop", "Bean Name", "Price", "Weight", "Stock", "Description", "URL", "Roast Date", "Updated At",
+    "Shop", "Bean Name", "Price", "Weight", "Stock", "Description", "URL", "Image URL", "Roast Date", "Updated At",
     "Country", "Region", "Farm", "Altitude",
     "Variety", "Process", "Roast Level", "Usage",
     "Flavor Keywords", "Acidity", "Sweetness", "Body",
